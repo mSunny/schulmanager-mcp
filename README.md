@@ -8,14 +8,15 @@ Ein lokaler [MCP](https://modelcontextprotocol.io/)-Server (Model Context Protoc
 
 | Tool | Beschreibung |
 |------|-------------|
-| `schulmanager_get_students` | Alle Kinder/Schüler des Accounts auflisten |
-| `schulmanager_get_schedule` | Stundenplan abrufen (Zeitraum wählbar) |
+| `schulmanager_daily_report` | **Eltern-Briefing**: Komplettueberblick pro Kind -- neue Nachrichten, Stundenplan morgen, Klassenarbeiten (7 Tage), Hausaufgaben |
+| `schulmanager_get_students` | Alle Kinder/Schueler des Accounts auflisten |
+| `schulmanager_get_schedule` | Stundenplan abrufen (Zeitraum waehlbar) |
 | `schulmanager_get_homework` | Aktuelle Hausaufgaben |
-| `schulmanager_get_exams` | Anstehende Prüfungen und Klassenarbeiten |
+| `schulmanager_get_exams` | Anstehende Pruefungen und Klassenarbeiten |
 | `schulmanager_get_grades` | Noten pro Fach (sofern von der Schule freigeschaltet) |
 | `schulmanager_get_letters` | Elternbriefe und Benachrichtigungen |
 | `schulmanager_get_institution` | Schulinformationen |
-| `schulmanager_raw_call` | Beliebiger API-Aufruf für nicht abgedeckte Endpunkte |
+| `schulmanager_raw_call` | Beliebiger API-Aufruf fuer nicht abgedeckte Endpunkte |
 
 ## Voraussetzungen
 
@@ -85,6 +86,7 @@ Alternativ kannst du die Credentials direkt als Umgebungsvariablen setzen (ohne 
 Starte Claude Code im Projektverzeichnis (oder jedem Verzeichnis mit passender MCP-Konfiguration) und frage einfach:
 
 ```
+> Gib mir das Eltern-Briefing
 > Welche Hausaufgaben hat mein Kind?
 > Zeig mir den Stundenplan fuer naechste Woche
 > Welche Klassenarbeiten stehen in den naechsten 4 Wochen an?

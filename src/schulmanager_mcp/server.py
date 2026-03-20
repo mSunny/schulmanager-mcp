@@ -322,6 +322,240 @@ async def get_institution(ctx: Context) -> str:
         return f"Error fetching institution: {e}"
 
 
+WEEKDAYS_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+
+
+def _next_school_day(today: date) -> date:
+    """Return the next school day (skip weekends)."""
+    nxt = today + timedelta(days=1)
+    while nxt.weekday() >= 5:  # 5=Sat, 6=Sun
+        nxt += timedelta(days=1)
+    return nxt
+
+
+def _extract_result_data(result: Any) -> Any:
+    """Extract the 'data' payload from an API batch result entry."""
+    if isinstance(result, dict):
+        return result.get("data", result)
+    return result
+
+
+def _format_daily_report(
+    student: dict,
+    tomorrow: date,
+    schedule: list,
+    homework: list,
+    exams: list,
+    letters: list,
+) -> str:
+    """Build a Markdown daily briefing for one student."""
+    name = f"{student.get('firstname', '?')} {student.get('lastname', '')}"
+    tom_str = tomorrow.strftime("%d.%m.%Y")
+    wd = WEEKDAYS_DE[tomorrow.weekday()]
+    lines: list[str] = []
+
+    lines.append(f"## {name}")
+    lines.append("")
+
+    # ── Unread letters ──────────────────────────────────────────
+    sid = student.get("id")
+    unread = []
+    for letter in letters:
+        for st in letter.get("studentStatuses", []):
+            if st.get("studentId") == sid and st.get("readTimestamp") is None:
+                unread.append(letter)
+                break
+
+    lines.append(f"### Neue Nachrichten ({len(unread)})")
+    if unread:
+        for letter in unread:
+            sent = letter.get("sentDate", "")[:10]
+            lines.append(f"- **{letter.get('title', '?')}** ({sent})")
+    else:
+        lines.append("- Keine ungelesenen Nachrichten")
+    lines.append("")
+
+    # ── Tomorrow's schedule ─────────────────────────────────────
+    tom_iso = tomorrow.isoformat()
+    tom_lessons = [l for l in schedule if l.get("date") == tom_iso]
+    tom_lessons.sort(key=lambda l: int(l.get("classHour", {}).get("number", 0)))
+
+    lines.append(f"### Stundenplan {wd} {tom_str}")
+    if tom_lessons:
+        for lesson in tom_lessons:
+            hour = lesson.get("classHour", {}).get("number", "?")
+            lesson_type = lesson.get("type", "")
+
+            # Cancelled lessons have no actualLesson, use originalLessons
+            if lesson.get("isCancelled") or lesson_type == "cancelledLesson":
+                originals = lesson.get("originalLessons", [])
+                if originals:
+                    orig_subj = originals[0].get("subject", {}).get("name", "?")
+                    lines.append(f"- **{hour}. Stunde**: ~~{orig_subj}~~ -- Entfall")
+                else:
+                    lines.append(f"- **{hour}. Stunde**: Entfall")
+                continue
+
+            actual = lesson.get("actualLesson", {})
+            subj = actual.get("subject", {}).get("name") or actual.get("subjectLabel", "?")
+            room = actual.get("room", {}).get("name", "")
+            teachers = actual.get("teachers", [])
+            teacher = teachers[0].get("lastname", "") if teachers else ""
+            change = ""
+            if lesson_type == "substitution":
+                change = " (Vertretung)"
+            room_str = f", Raum {room}" if room else ""
+            teacher_str = f" ({teacher})" if teacher else ""
+            lines.append(
+                f"- **{hour}. Stunde**: {subj}{teacher_str}{room_str}{change}"
+            )
+    else:
+        lines.append("- Kein Unterricht")
+    lines.append("")
+
+    # ── Exams next 7 days ───────────────────────────────────────
+    lines.append("### Klassenarbeiten & Tests (naechste 7 Tage)")
+    if exams:
+        exams_sorted = sorted(exams, key=lambda e: e.get("date", ""))
+        for ex in exams_sorted:
+            ex_date = ex.get("date", "?")
+            subj = ex.get("subject", {}).get("name", ex.get("subjectText", "?"))
+            ex_type = ex.get("type", {}).get("name", "Test")
+            comment = ex.get("comment", "")
+            comment_str = f' -- "{comment}"' if comment else ""
+            lines.append(f"- **{ex_date}**: {subj} ({ex_type}){comment_str}")
+    else:
+        lines.append("- Keine anstehenden Arbeiten")
+    lines.append("")
+
+    # ── Homework for tomorrow + recent new homework ─────────────
+    today_iso = date.today().isoformat()
+    hw_tomorrow = [h for h in homework if h.get("date") == tom_iso]
+    hw_new = [h for h in homework if h.get("date", "") >= today_iso and h.get("date") != tom_iso]
+
+    lines.append("### Hausaufgaben fuer morgen")
+    if hw_tomorrow:
+        for h in hw_tomorrow:
+            lines.append(f"- **{h.get('subject', '?')}**: {h.get('homework', '')}")
+    else:
+        lines.append("- Keine Hausaufgaben fuer morgen eingetragen")
+    lines.append("")
+
+    if hw_new:
+        lines.append("### Neue Hausaufgaben (ab heute)")
+        for h in sorted(hw_new, key=lambda x: x.get("date", "")):
+            lines.append(
+                f"- **{h.get('subject', '?')}** ({h.get('date', '?')}): "
+                f"{h.get('homework', '')}"
+            )
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@mcp.tool(
+    name="schulmanager_daily_report",
+    annotations={
+        "title": "Daily Parent Briefing",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def daily_report(ctx: Context) -> str:
+    """Generate a daily parent briefing for ALL children on this account.
+
+    The report includes for each child:
+    - Unread messages/letters from teachers
+    - Tomorrow's class schedule (next school day, skips weekends)
+    - Exams and tests in the next 7 days
+    - Homework due tomorrow
+    - Newly assigned homework (from today onwards)
+
+    This is the ideal tool for a quick morning or evening overview
+    of everything school-related. No parameters needed -- it
+    automatically covers all children and picks the right dates.
+
+    Returns:
+        str: Markdown-formatted daily briefing for all students.
+    """
+    client = _get_client(ctx)
+    await client.ensure_authenticated()
+
+    if not client.students:
+        return "Keine Schueler auf diesem Account gefunden."
+
+    today = date.today()
+    tomorrow = _next_school_day(today)
+    exam_end = (today + timedelta(days=7)).isoformat()
+
+    # Fetch letters once (shared across all children)
+    try:
+        letters = await client.get_letters()
+        if not isinstance(letters, list):
+            letters = []
+    except Exception:
+        letters = []
+
+    # Build a batch request for all children at once
+    requests: list[dict] = []
+    for student in client.students:
+        sid = student["id"]
+        requests.append({
+            "moduleName": "schedules",
+            "endpointName": "get-actual-lessons",
+            "parameters": {
+                "student": {"id": sid},
+                "start": tomorrow.isoformat(),
+                "end": tomorrow.isoformat(),
+            },
+        })
+        requests.append({
+            "moduleName": "classbook",
+            "endpointName": "get-homework",
+            "parameters": {"student": {"id": sid}},
+        })
+        requests.append({
+            "moduleName": "exams",
+            "endpointName": "get-exams",
+            "parameters": {
+                "student": {"id": sid},
+                "start": today.isoformat(),
+                "end": exam_end,
+            },
+        })
+
+    try:
+        results = await client.api_call(requests)
+    except Exception as e:
+        return f"Fehler beim Abrufen der Daten: {e}"
+
+    # Parse results -- 3 results per student in order
+    parts: list[str] = []
+    parts.append(f"# Eltern-Briefing ({today.strftime('%d.%m.%Y')})")
+    parts.append("")
+
+    for i, student in enumerate(client.students):
+        base = i * 3
+        schedule = _extract_result_data(results[base]) if base < len(results) else []
+        homework = _extract_result_data(results[base + 1]) if base + 1 < len(results) else []
+        exams = _extract_result_data(results[base + 2]) if base + 2 < len(results) else []
+
+        if not isinstance(schedule, list):
+            schedule = []
+        if not isinstance(homework, list):
+            homework = []
+        if not isinstance(exams, list):
+            exams = []
+
+        parts.append(
+            _format_daily_report(student, tomorrow, schedule, homework, exams, letters)
+        )
+
+    return "\n".join(parts)
+
+
 @mcp.tool(
     name="schulmanager_raw_call",
     annotations={
