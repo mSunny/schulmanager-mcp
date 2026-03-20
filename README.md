@@ -8,7 +8,7 @@ Ein lokaler [MCP](https://modelcontextprotocol.io/)-Server (Model Context Protoc
 
 | Tool | Beschreibung |
 |------|-------------|
-| `schulmanager_daily_report` | **Eltern-Briefing**: Komplettueberblick pro Kind -- neue Nachrichten, Stundenplan morgen, Klassenarbeiten (7 Tage), Hausaufgaben |
+| `schulmanager_daily_report` | **Eltern-Briefing**: Komplettueberblick pro Kind -- neue Nachrichten, Stundenplan morgen, Klassenarbeiten (7 Tage), Hausaufgaben (7 Tage) |
 | `schulmanager_get_students` | Alle Kinder/Schueler des Accounts auflisten |
 | `schulmanager_get_schedule` | Stundenplan abrufen (Zeitraum waehlbar) |
 | `schulmanager_get_homework` | Aktuelle Hausaufgaben |
@@ -92,6 +92,48 @@ Starte Claude Code im Projektverzeichnis (oder jedem Verzeichnis mit passender M
 > Welche Klassenarbeiten stehen in den naechsten 4 Wochen an?
 > Gibt es neue Elternbriefe?
 > Was steht morgen auf dem Stundenplan?
+```
+
+### Standalone Daily Report
+
+Das Eltern-Briefing kann auch ohne MCP direkt im Terminal ausgegeben werden:
+
+```bash
+./daily_report.sh
+```
+
+### Beispiel-Report
+
+```markdown
+# Eltern-Briefing (20.03.2026)
+
+## Max Mustermann
+
+### Auf einen Blick
+- **1 ungelesene Nachricht** -- "Elternabend am 25.03."
+- Stundenplan Mo: **1. Stunde faellt aus** (Deutsch), danach Englisch, Musik, Kunst
+- **2 Arbeiten diese Woche** -- Di Englisch (Klassenarbeit), Mi Mathe (Klassenarbeit)
+- Hausaufgaben fuer Mo: Englisch (+2 weitere diese Woche)
+
+### Neue Nachrichten (1)
+- **Elternabend am 25.03.** (2026-03-18)
+  https://login.schulmanager-online.de/#/modules/letters/view/12345
+
+### Stundenplan Mo 23.03.2026
+- **1. Stunde**: ~~Deutsch~~ -- Entfall
+- **2. Stunde**: Englisch (Mueller), Raum 201
+- **3. Stunde**: Englisch (Mueller), Raum 201
+- **4. Stunde**: Musik (Schmidt), Raum 110
+- **5. Stunde**: Kunst (Schmidt), Raum 215
+
+### Klassenarbeiten & Tests (naechste 7 Tage)
+- **2026-03-24**: Englisch (Klassenarbeit)
+- **2026-03-25**: Mathematik (Klassenarbeit) -- "Lineare Funktionen"
+
+### Hausaufgaben (naechste 7 Tage)
+- **Mo 23.03. Englisch**: Workbook S. 45, Nr. 3-5
+- **Mi 25.03. Deutsch**: Aufsatz zu Ende schreiben
+- **Do 26.03. Mathematik**: Aufgabenblatt Funktionen
 ```
 
 ## Technische Details

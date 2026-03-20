@@ -334,12 +334,6 @@ def _next_school_day(today: date) -> date:
     return nxt
 
 
-def _last_school_day_before(d: date) -> date:
-    """Return the most recent school day on or before d (skip weekends)."""
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    return d
-
 
 def _extract_result_data(result: Any) -> Any:
     """Extract the 'data' payload from an API batch result entry."""
@@ -397,24 +391,43 @@ def _format_daily_report(
     # Exams sorted
     exams_sorted = sorted(exams, key=lambda e: e.get("date", ""))
 
-    # Homework
+    # Homework – collect for next 7 days
     today = date.today()
     today_iso = today.isoformat()
-    last_school = _last_school_day_before(today)
-    last_school_iso = last_school.isoformat()
+    hw_end = today + timedelta(days=7)
 
-    hw_for_next = [h for h in homework if h.get("date") == last_school_iso]
-    if today.weekday() < 5 and last_school == today:
-        yesterday = (today - timedelta(days=1)).isoformat()
-        hw_for_next += [h for h in homework if h.get("date") == yesterday]
+    # Build list of the next 7 school days for grouping
+    hw_days: list[date] = []
+    d = _next_school_day(today)
+    while d <= hw_end:
+        hw_days.append(d)
+        d = _next_school_day(d)
 
-    shown_dates = {last_school_iso}
-    if today.weekday() < 5:
-        shown_dates.add((today - timedelta(days=1)).isoformat())
-    hw_new = [
-        h for h in homework
-        if h.get("date", "") >= today_iso and h.get("date") not in shown_dates
-    ]
+    # Homework "date" = day it was assigned; it's due the next school day.
+    # Build mapping: due_date -> list of homework items
+    hw_by_due: dict[str, list] = {}
+    for h in homework:
+        assigned = h.get("date", "")
+        if not assigned:
+            continue
+        try:
+            assigned_date = date.fromisoformat(assigned)
+        except ValueError:
+            continue
+        due = _next_school_day(assigned_date)
+        due_iso = due.isoformat()
+        if due_iso not in hw_by_due:
+            hw_by_due[due_iso] = []
+        hw_by_due[due_iso].append(h)
+
+    # Filter to only the next 7 days
+    hw_week: list[tuple[date, list]] = []
+    hw_total = 0
+    for day in hw_days:
+        items = hw_by_due.get(day.isoformat(), [])
+        if items:
+            hw_week.append((day, items))
+            hw_total += len(items)
 
     # ── Build summary ("Auf einen Blick") ────────────────────────
 
@@ -473,11 +486,19 @@ def _format_daily_report(
         )
 
     # Homework summary
-    if hw_for_next:
-        hw_subjects = ", ".join(h.get("subject", "?") for h in hw_for_next)
-        summary_bullets.append(f"Hausaufgaben fuer {wd}: {hw_subjects}")
+    if hw_total:
+        # Highlight tomorrow's homework specifically, plus total
+        hw_tomorrow = hw_by_due.get(tomorrow.isoformat(), [])
+        if hw_tomorrow:
+            hw_subj = ", ".join(h.get("subject", "?") for h in hw_tomorrow)
+            summary_bullets.append(
+                f"Hausaufgaben fuer {wd}: {hw_subj}"
+                + (f" (+{hw_total - len(hw_tomorrow)} weitere diese Woche)" if hw_total > len(hw_tomorrow) else "")
+            )
+        else:
+            summary_bullets.append(f"**{hw_total} Hausaufgaben** diese Woche (keine fuer {wd})")
     else:
-        summary_bullets.append(f"Keine Hausaufgaben fuer {wd} eingetragen")
+        summary_bullets.append(f"Keine Hausaufgaben eingetragen")
 
     lines.append(f"### Auf einen Blick")
     for b in summary_bullets:
@@ -548,23 +569,19 @@ def _format_daily_report(
         lines.append("- Keine anstehenden Arbeiten")
     lines.append("")
 
-    # Homework detail
-    lines.append(f"### Hausaufgaben fuer {wd} {tom_str}")
-    if hw_for_next:
-        for h in hw_for_next:
-            lines.append(f"- **{h.get('subject', '?')}**: {h.get('homework', '')}")
+    # Homework detail – next 7 days
+    lines.append("### Hausaufgaben (naechste 7 Tage)")
+    if hw_week:
+        for hw_date, items in hw_week:
+            hw_wd = WEEKDAYS_DE[hw_date.weekday()]
+            hw_str = hw_date.strftime("%d.%m.")
+            for h in items:
+                lines.append(
+                    f"- **{hw_wd} {hw_str} {h.get('subject', '?')}**: {h.get('homework', '')}"
+                )
     else:
         lines.append("- Keine Hausaufgaben eingetragen")
     lines.append("")
-
-    if hw_new:
-        lines.append("### Neue Hausaufgaben (ab heute)")
-        for h in sorted(hw_new, key=lambda x: x.get("date", "")):
-            lines.append(
-                f"- **{h.get('subject', '?')}** ({h.get('date', '?')}): "
-                f"{h.get('homework', '')}"
-            )
-        lines.append("")
 
     return "\n".join(lines)
 
@@ -586,8 +603,7 @@ async def daily_report(ctx: Context) -> str:
     - Unread messages/letters from teachers
     - Tomorrow's class schedule (next school day, skips weekends)
     - Exams and tests in the next 7 days
-    - Homework due tomorrow
-    - Newly assigned homework (from today onwards)
+    - Homework due in the next 7 days (grouped by day)
 
     This is the ideal tool for a quick morning or evening overview
     of everything school-related. No parameters needed -- it
