@@ -442,17 +442,17 @@ def _format_daily_report(
                 unique_subjects.append(s)
         subj_str = ", ".join(unique_subjects)
 
-        parts = []
+        alerts = []
         if cancellations:
             n = len(cancellations)
-            parts.append(f"**{n}. Stunde faellt aus** ({', '.join(cancellations)})")
+            alerts.append(f"**{n}. Stunde faellt aus** ({', '.join(cancellations)})")
         if substitutions:
             n = len(substitutions)
-            parts.append(f"{n}x Vertretung ({', '.join(substitutions)})")
+            alerts.append(f"{n}x Vertretung ({', '.join(substitutions)})")
 
-        if parts:
+        if alerts:
             summary_bullets.append(
-                f"Stundenplan {wd}: {subj_str} -- {'; '.join(parts)}"
+                f"Stundenplan {wd}: {'; '.join(alerts)}, danach {subj_str}"
             )
         else:
             summary_bullets.append(f"Stundenplan {wd}: {subj_str}")
