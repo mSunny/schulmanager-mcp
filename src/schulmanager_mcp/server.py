@@ -323,6 +323,7 @@ async def get_institution(ctx: Context) -> str:
 
 
 WEEKDAYS_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+LETTER_BASE_URL = "https://login.schulmanager-online.de/#/modules/letters/view"
 
 
 def _next_school_day(today: date) -> date:
@@ -331,6 +332,13 @@ def _next_school_day(today: date) -> date:
     while nxt.weekday() >= 5:  # 5=Sat, 6=Sun
         nxt += timedelta(days=1)
     return nxt
+
+
+def _last_school_day_before(d: date) -> date:
+    """Return the most recent school day on or before d (skip weekends)."""
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
 
 
 def _extract_result_data(result: Any) -> Any:
@@ -370,7 +378,12 @@ def _format_daily_report(
     if unread:
         for letter in unread:
             sent = letter.get("sentDate", "")[:10]
-            lines.append(f"- **{letter.get('title', '?')}** ({sent})")
+            lid = letter.get("id", "")
+            link = f"{LETTER_BASE_URL}/{lid}" if lid else ""
+            lines.append(
+                f"- **{letter.get('title', '?')}** ({sent})"
+                + (f"  \n  {link}" if link else "")
+            )
     else:
         lines.append("- Keine ungelesenen Nachrichten")
     lines.append("")
@@ -428,17 +441,38 @@ def _format_daily_report(
         lines.append("- Keine anstehenden Arbeiten")
     lines.append("")
 
-    # ── Homework for tomorrow + recent new homework ─────────────
-    today_iso = date.today().isoformat()
-    hw_tomorrow = [h for h in homework if h.get("date") == tom_iso]
-    hw_new = [h for h in homework if h.get("date", "") >= today_iso and h.get("date") != tom_iso]
+    # ── Homework for next school day + recent new homework ────────
+    # Homework 'date' = day it was assigned, not due date.
+    # On weekdays: show homework assigned today (due tomorrow).
+    # On Fri/Sat/Sun: show homework assigned on Friday (due Monday).
+    today = date.today()
+    today_iso = today.isoformat()
+    last_school = _last_school_day_before(today)
+    last_school_iso = last_school.isoformat()
 
-    lines.append("### Hausaufgaben fuer morgen")
-    if hw_tomorrow:
-        for h in hw_tomorrow:
+    # Homework assigned on the last school day = due for the next school day
+    hw_for_next = [h for h in homework if h.get("date") == last_school_iso]
+    # If we're on a weekday and last_school == today, also check yesterday
+    # for homework that might span overnight
+    if today.weekday() < 5 and last_school == today:
+        yesterday = (today - timedelta(days=1)).isoformat()
+        hw_for_next += [h for h in homework if h.get("date") == yesterday]
+
+    # New homework = assigned today or after, excluding what we already show
+    shown_dates = {last_school_iso}
+    if today.weekday() < 5:
+        shown_dates.add((today - timedelta(days=1)).isoformat())
+    hw_new = [
+        h for h in homework
+        if h.get("date", "") >= today_iso and h.get("date") not in shown_dates
+    ]
+
+    lines.append(f"### Hausaufgaben fuer {wd} {tom_str}")
+    if hw_for_next:
+        for h in hw_for_next:
             lines.append(f"- **{h.get('subject', '?')}**: {h.get('homework', '')}")
     else:
-        lines.append("- Keine Hausaufgaben fuer morgen eingetragen")
+        lines.append("- Keine Hausaufgaben eingetragen")
     lines.append("")
 
     if hw_new:
