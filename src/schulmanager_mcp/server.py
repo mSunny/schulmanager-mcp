@@ -360,12 +360,10 @@ def _format_daily_report(
     name = f"{student.get('firstname', '?')} {student.get('lastname', '')}"
     tom_str = tomorrow.strftime("%d.%m.%Y")
     wd = WEEKDAYS_DE[tomorrow.weekday()]
-    lines: list[str] = []
 
-    lines.append(f"## {name}")
-    lines.append("")
+    # ── Gather all data first ────────────────────────────────────
 
-    # ── Unread letters ──────────────────────────────────────────
+    # Unread letters
     sid = student.get("id")
     unread = []
     for letter in letters:
@@ -374,6 +372,121 @@ def _format_daily_report(
                 unread.append(letter)
                 break
 
+    # Tomorrow's lessons
+    tom_iso = tomorrow.isoformat()
+    tom_lessons = [l for l in schedule if l.get("date") == tom_iso]
+    tom_lessons.sort(key=lambda l: int(l.get("classHour", {}).get("number", 0)))
+
+    # Classify lessons
+    cancellations = []
+    substitutions = []
+    regular_subjects = []
+    for lesson in tom_lessons:
+        lesson_type = lesson.get("type", "")
+        if lesson.get("isCancelled") or lesson_type == "cancelledLesson":
+            originals = lesson.get("originalLessons", [])
+            subj = originals[0].get("subject", {}).get("name", "?") if originals else "?"
+            cancellations.append(subj)
+        else:
+            actual = lesson.get("actualLesson", {})
+            subj = actual.get("subject", {}).get("name") or actual.get("subjectLabel", "?")
+            if lesson_type == "substitution":
+                substitutions.append(subj)
+            regular_subjects.append(subj)
+
+    # Exams sorted
+    exams_sorted = sorted(exams, key=lambda e: e.get("date", ""))
+
+    # Homework
+    today = date.today()
+    today_iso = today.isoformat()
+    last_school = _last_school_day_before(today)
+    last_school_iso = last_school.isoformat()
+
+    hw_for_next = [h for h in homework if h.get("date") == last_school_iso]
+    if today.weekday() < 5 and last_school == today:
+        yesterday = (today - timedelta(days=1)).isoformat()
+        hw_for_next += [h for h in homework if h.get("date") == yesterday]
+
+    shown_dates = {last_school_iso}
+    if today.weekday() < 5:
+        shown_dates.add((today - timedelta(days=1)).isoformat())
+    hw_new = [
+        h for h in homework
+        if h.get("date", "") >= today_iso and h.get("date") not in shown_dates
+    ]
+
+    # ── Build summary ("Auf einen Blick") ────────────────────────
+
+    lines: list[str] = []
+    lines.append(f"## {name}")
+    lines.append("")
+
+    summary_bullets: list[str] = []
+
+    # Unread messages summary
+    if unread:
+        titles = ", ".join(f'"{l.get("title", "?")}"' for l in unread)
+        summary_bullets.append(
+            f"**{len(unread)} ungelesene Nachricht{'en' if len(unread) != 1 else ''}** -- {titles}"
+        )
+
+    # Schedule summary
+    if tom_lessons:
+        # Deduplicate subjects in order
+        seen = set()
+        unique_subjects = []
+        for s in regular_subjects:
+            if s not in seen:
+                seen.add(s)
+                unique_subjects.append(s)
+        subj_str = ", ".join(unique_subjects)
+
+        parts = []
+        if cancellations:
+            n = len(cancellations)
+            parts.append(f"**{n}. Stunde faellt aus** ({', '.join(cancellations)})")
+        if substitutions:
+            n = len(substitutions)
+            parts.append(f"{n}x Vertretung ({', '.join(substitutions)})")
+
+        if parts:
+            summary_bullets.append(
+                f"Stundenplan {wd}: {subj_str} -- {'; '.join(parts)}"
+            )
+        else:
+            summary_bullets.append(f"Stundenplan {wd}: {subj_str}")
+    else:
+        summary_bullets.append(f"**Kein Unterricht** am {wd}")
+
+    # Exams summary
+    if exams_sorted:
+        exam_parts = []
+        for ex in exams_sorted:
+            ex_wd = WEEKDAYS_DE[date.fromisoformat(ex.get("date", today_iso)).weekday()]
+            subj = ex.get("subject", {}).get("name", ex.get("subjectText", "?"))
+            ex_type = ex.get("type", {}).get("name", "Test")
+            exam_parts.append(f"{ex_wd} {subj} ({ex_type})")
+        summary_bullets.append(
+            f"**{len(exams_sorted)} Arbeit{'en' if len(exams_sorted) != 1 else ''} diese Woche** -- "
+            + ", ".join(exam_parts)
+        )
+
+    # Homework summary
+    if hw_for_next:
+        hw_subjects = ", ".join(h.get("subject", "?") for h in hw_for_next)
+        summary_bullets.append(f"Hausaufgaben fuer {wd}: {hw_subjects}")
+    else:
+        summary_bullets.append(f"Keine Hausaufgaben fuer {wd} eingetragen")
+
+    lines.append(f"### Auf einen Blick")
+    for b in summary_bullets:
+        lines.append(f"- {b}")
+    lines.append("")
+
+    # ── Detailed sections ────────────────────────────────────────
+
+    # Letters detail
     lines.append(f"### Neue Nachrichten ({len(unread)})")
     if unread:
         for letter in unread:
@@ -388,18 +501,13 @@ def _format_daily_report(
         lines.append("- Keine ungelesenen Nachrichten")
     lines.append("")
 
-    # ── Tomorrow's schedule ─────────────────────────────────────
-    tom_iso = tomorrow.isoformat()
-    tom_lessons = [l for l in schedule if l.get("date") == tom_iso]
-    tom_lessons.sort(key=lambda l: int(l.get("classHour", {}).get("number", 0)))
-
+    # Schedule detail
     lines.append(f"### Stundenplan {wd} {tom_str}")
     if tom_lessons:
         for lesson in tom_lessons:
             hour = lesson.get("classHour", {}).get("number", "?")
             lesson_type = lesson.get("type", "")
 
-            # Cancelled lessons have no actualLesson, use originalLessons
             if lesson.get("isCancelled") or lesson_type == "cancelledLesson":
                 originals = lesson.get("originalLessons", [])
                 if originals:
@@ -426,10 +534,9 @@ def _format_daily_report(
         lines.append("- Kein Unterricht")
     lines.append("")
 
-    # ── Exams next 7 days ───────────────────────────────────────
+    # Exams detail
     lines.append("### Klassenarbeiten & Tests (naechste 7 Tage)")
-    if exams:
-        exams_sorted = sorted(exams, key=lambda e: e.get("date", ""))
+    if exams_sorted:
         for ex in exams_sorted:
             ex_date = ex.get("date", "?")
             subj = ex.get("subject", {}).get("name", ex.get("subjectText", "?"))
@@ -441,32 +548,7 @@ def _format_daily_report(
         lines.append("- Keine anstehenden Arbeiten")
     lines.append("")
 
-    # ── Homework for next school day + recent new homework ────────
-    # Homework 'date' = day it was assigned, not due date.
-    # On weekdays: show homework assigned today (due tomorrow).
-    # On Fri/Sat/Sun: show homework assigned on Friday (due Monday).
-    today = date.today()
-    today_iso = today.isoformat()
-    last_school = _last_school_day_before(today)
-    last_school_iso = last_school.isoformat()
-
-    # Homework assigned on the last school day = due for the next school day
-    hw_for_next = [h for h in homework if h.get("date") == last_school_iso]
-    # If we're on a weekday and last_school == today, also check yesterday
-    # for homework that might span overnight
-    if today.weekday() < 5 and last_school == today:
-        yesterday = (today - timedelta(days=1)).isoformat()
-        hw_for_next += [h for h in homework if h.get("date") == yesterday]
-
-    # New homework = assigned today or after, excluding what we already show
-    shown_dates = {last_school_iso}
-    if today.weekday() < 5:
-        shown_dates.add((today - timedelta(days=1)).isoformat())
-    hw_new = [
-        h for h in homework
-        if h.get("date", "") >= today_iso and h.get("date") not in shown_dates
-    ]
-
+    # Homework detail
     lines.append(f"### Hausaufgaben fuer {wd} {tom_str}")
     if hw_for_next:
         for h in hw_for_next:
