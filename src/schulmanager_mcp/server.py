@@ -20,7 +20,7 @@ from .api import SchulmanagerClient, SchulmanagerAPIError
 
 
 @asynccontextmanager
-async def app_lifespan():
+async def app_lifespan(app):
     email = os.environ.get("SCHULMANAGER_EMAIL", "")
     password = os.environ.get("SCHULMANAGER_PASSWORD", "")
     if not email or not password:
@@ -40,7 +40,7 @@ mcp = FastMCP("schulmanager_mcp", lifespan=app_lifespan)
 
 
 def _get_client(ctx: Context) -> SchulmanagerClient:
-    return ctx.request_context.lifespan_state["client"]
+    return ctx.request_context.lifespan_context["client"]
 
 
 def _default_student_id(client: SchulmanagerClient, student_id: int | None) -> int:
