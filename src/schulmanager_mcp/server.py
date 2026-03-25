@@ -559,7 +559,12 @@ def _format_daily_report(
     lines.append("### Klassenarbeiten & Tests (naechste 7 Tage)")
     if exams_sorted:
         for ex in exams_sorted:
-            ex_date = ex.get("date", "?")
+            ex_date_raw = ex.get("date", "?")
+            try:
+                ex_d = date.fromisoformat(ex_date_raw)
+                ex_date = f"{WEEKDAYS_DE[ex_d.weekday()]}, {ex_d.strftime('%d.%m.%Y')}"
+            except (ValueError, KeyError):
+                ex_date = ex_date_raw
             subj = ex.get("subject", {}).get("name", ex.get("subjectText", "?"))
             ex_type = ex.get("type", {}).get("name", "Test")
             comment = ex.get("comment", "")
