@@ -20,6 +20,8 @@ A local [MCP](https://modelcontextprotocol.io/) (Model Context Protocol) server 
 | `schulmanager_get_letter` | **New:** full content of one letter, including text extracted from PDF attachments |
 | `schulmanager_get_new_letters` | **New:** letters not yet processed on this account |
 | `schulmanager_mark_letters_processed` | **New:** mark letters as processed after a successful run |
+| `schulmanager_get_new_messages` | **New:** unprocessed messages from the messenger (Nachrichten), including text extracted from PDF attachments |
+| `schulmanager_mark_messages_processed` | **New:** mark messenger messages as processed after a successful run |
 | `schulmanager_send_summary_email` | **New:** send a summary email to preconfigured recipients via Gmail SMTP |
 | `schulmanager_get_institution` | School information |
 | `schulmanager_raw_call` | Arbitrary API call for endpoints not covered above |
@@ -220,6 +222,10 @@ Before the first scheduled run, mark old letters as processed once, otherwise th
 > older than 7 days as processed.
 ```
 
+### Messenger (Nachrichten)
+
+Schools also send information through the messenger, separately from parent letters — e.g. early dismissals or collection deadlines. `schulmanager_get_new_messages(days=30)` checks all non-archived threads with activity in the last `days` days and returns messages not yet processed, with thread subject, sender, date, text and PDF attachment text. `schulmanager_mark_messages_processed` records their IDs in `state/messages_<SCHOOL_KEY>.json`.
+
 ### Email summary
 
 `schulmanager_send_summary_email(subject, body)` sends a plain-text email via Gmail SMTP (SSL, port 465). Recipients come from `SUMMARY_TO` in the server config and cannot be set by the model.
@@ -228,12 +234,12 @@ Before the first scheduled run, mark old letters as processed once, otherwise th
 
 A typical scheduled run (e.g. a Claude Cowork scheduled task that requires the local computer, since the MCP server runs locally):
 
-1. `schulmanager_get_new_letters` for each account
+1. `schulmanager_get_new_letters` and `schulmanager_get_new_messages` for each account
 2. `schulmanager_get_letter` for each new letter (including PDFs)
 3. Translate and summarize; extract events and to-dos and resolve relative deadlines ("by the next lesson") using `schulmanager_get_schedule`
 4. Add events to a calendar and to-dos to a task list (e.g. via the Google Calendar and Todoist connectors), using IDs like `SM-ID: school-a-<letterId>-<n>` in descriptions to avoid duplicates
 5. `schulmanager_send_summary_email`
-6. `schulmanager_mark_letters_processed` — **only after** the email was sent, so nothing is lost if a run fails
+6. `schulmanager_mark_letters_processed` and `schulmanager_mark_messages_processed` — **only after** the email was sent, so nothing is lost if a run fails
 
 #### Example prompt
 
@@ -306,14 +312,16 @@ All data requests go through the central `/api/calls` endpoint as batch requests
 | `exams` | `get-exams` | Exams and class tests |
 | `grades` | `get-grades` | Grades |
 | `letters` | `get-letters` | Parent letters (metadata only) |
-| `letters` | `poqa` | Letter content: ORM-style query, `action: findByPk` on model `modules/letters/letter`, with `include: attachments` |
+| `letters` | `get-letter-for-reading` | Letter content: `{"letterId": id}` → title, text (HTML), answerDeadline, attachments, questions |
+| `messenger` | `get-subscriptions` | Messenger threads with subject, sender and last message timestamp |
+| `messenger` | `get-messages-by-subscription` | Messages of a thread: `{"subscriptionId": id, "loadAll": false}` |
 | `main` | `get-institution` | School information |
 
 Not every school enables every module. If a school does not use homework in Schulmanager, `get-homework` may return HTTP 500 instead of an empty list.
 
 ### Attachments
 
-The attachment's `file` field is a JSON string (`[institutionId, module, hash, key, contentType, size, filename]`). The download URL is its base64 encoding:
+Letter and messenger attachments share the same format. The attachment's `file` field is a JSON string (`[institutionId, module, hash, key, contentType, size, filename]`). The download URL is its base64 encoding:
 
 ```
 GET https://login.schulmanager-online.de/download-file/<base64(file)>

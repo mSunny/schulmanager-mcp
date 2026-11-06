@@ -18,7 +18,7 @@ from pathlib import Path
 from email.message import EmailMessage
 from pypdf import PdfReader
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP, Context
@@ -399,6 +399,122 @@ async def mark_letters_processed(letter_ids: list[int], ctx: Context) -> str:
     processed.update(int(i) for i in letter_ids)
     _save_processed(processed)
     return f"{len(letter_ids)} Briefe als verarbeitet markiert ({_school_key()})."
+    
+def _messages_state_path() -> Path:
+    return STATE_DIR / f"messages_{_school_key()}.json"
+
+
+def _load_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        return {str(i) for i in json.loads(path.read_text(encoding="utf-8"))}
+    except Exception:
+        return set()
+
+
+def _save_ids(path: Path, ids: set[str]) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(sorted(ids)), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+@mcp.tool(name="schulmanager_get_new_messages")
+async def get_new_messages(ctx: Context, days: int = 30) -> str:
+    """List messenger messages (Nachrichten) that have NOT been processed yet.
+
+    Checks all non-archived threads with activity in the last `days` days.
+    Only after the summary email was sent successfully, call
+    schulmanager_mark_messages_processed with the message IDs.
+    """
+    client = _get_client(ctx)
+    try:
+        subs = await client.single_call("messenger", "get-subscriptions", {})
+    except Exception as e:
+        return f"Error: {e}"
+    if not isinstance(subs, list):
+        return f"Unexpected response from get-subscriptions:\n{_format_json(subs)}"
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    processed = _load_ids(_messages_state_path())
+    key = _school_key()
+    out = []
+    count = 0
+
+    for sub in subs:
+        thread = sub.get("thread") or {}
+        if sub.get("isArchived"):
+            continue
+        last = _parse_ts(thread.get("lastMessageTimestamp"))
+        if last and last < cutoff:
+            continue
+        try:
+            data = await client.single_call(
+                "messenger", "get-messages-by-subscription",
+                {"subscriptionId": str(sub.get("id")), "loadAll": False},
+            )
+        except Exception as e:
+            out.append(f"## {thread.get('subject', '')}\n[Fehler beim Laden: {e}]")
+            continue
+        messages = data.get("messages", []) if isinstance(data, dict) else []
+        new = [m for m in messages if str(m.get("id")) not in processed]
+        if not new:
+            continue
+
+        header = f"Von: {thread.get('senderString', '')} → {thread.get('recipientString', '')}"
+        if thread.get("allowAnswers"):
+            header += " (Antworten möglich)"
+        out.append(f"## {thread.get('subject', '')}")
+        out.append(header)
+
+        for m in sorted(new, key=lambda m: m.get("createdAt") or ""):
+            count += 1
+            s = m.get("sender") or {}
+            out.append("")
+            out.append(f"### Nachricht {m.get('id')}: {s.get('firstname', '')} "
+                       f"{s.get('lastname', '')}, {m.get('createdAt')}")
+            out.append((m.get("text") or "").strip())
+            for a in m.get("attachments") or []:
+                try:
+                    meta = json.loads(a["file"])
+                    name = meta[6] if len(meta) > 6 else "attachment"
+                    ctype = meta[4] if len(meta) > 4 else ""
+                except Exception:
+                    out.append(f"#### Anhang (unbekanntes Format): {_format_json(a)}")
+                    continue
+                out.append(f"#### Anhang: {name}")
+                if ctype == "application/pdf":
+                    out.append(await _fetch_pdf_text(a["file"]))
+                else:
+                    out.append(f"[{ctype}, nicht automatisch lesbar]")
+        out.append("")
+
+    if not count:
+        return f"Schule '{key}': keine neuen Nachrichten."
+    return (f"Schule '{key}': {count} neue Nachrichten (SM-ID-Präfix: {key}-msg-):\n\n"
+            + "\n".join(out))
+
+
+@mcp.tool(name="schulmanager_mark_messages_processed")
+async def mark_messages_processed(message_ids: list[str], ctx: Context) -> str:
+    """Mark messenger messages as processed so schulmanager_get_new_messages
+    no longer returns them. Call only after the summary email was sent.
+    """
+    path = _messages_state_path()
+    ids = _load_ids(path)
+    ids.update(str(i) for i in message_ids)
+    _save_ids(path, ids)
+    return f"{len(message_ids)} Nachrichten als verarbeitet markiert ({_school_key()})."
     
 @mcp.tool(
     name="schulmanager_get_institution",
@@ -880,36 +996,31 @@ async def get_letter(letter_id: int, ctx: Context) -> str:
     dates, reply deadline, survey options, attachment list and the full text.
     """
     client = _get_client(ctx)
-    params = {"action": {
-        "model": "modules/letters/letter",
-        "action": "findByPk",
-        "parameters": [letter_id, {"include": [{
-            "association": "attachments", "required": False,
-            "attributes": ["id", "filename", "file", "contentType", "inline", "letterId"],
-        }]}],
-    }}
     try:
-        data = await client.single_call("letters", "poqa", params)
+        data = await client.single_call(
+            "letters", "get-letter-for-reading", {"letterId": letter_id}
+        )
     except Exception as e:
         return f"Error: {e}"
 
-    if isinstance(data, dict) and "title" not in data and isinstance(data.get("data"), dict):
-        data = data["data"]
-    if not data:
-        return f"Letter {letter_id} not found."
+    if not isinstance(data, dict) or ("title" not in data and "text" not in data):
+        return f"Unexpected response for letter {letter_id}:\n{_format_json(data)}"
 
     lines = [f"# {data.get('title', '')}",
-             f"ID: {data.get('id')}",
-             f"Gesendet: {data.get('sentDate')}"]
+             f"ID: {data.get('id')}"]
+    if data.get("sentDate"):
+        lines.append(f"Gesendet: {data['sentDate']}")
     if data.get("answerDeadline"):
         lines.append(f"Antwortfrist: {data['answerDeadline']}")
-    if data.get("options"):
-        lines.append(f"Optionen/Umfrage: {_format_json(data['options'])}")
+    if data.get("questions"):
+        lines.append(f"Fragen/Umfrage: {_format_json(data['questions'])}")
     attachments = data.get("attachments") or []
     lines.append("")
     lines.append(_html_to_text(data.get("text", "")))
     for a in attachments:
-        name, ctype = a.get("filename"), a.get("contentType") or ""
+        meta = json.loads(a["file"]) if a.get("file") else []
+        name = a.get("filename") or (meta[6] if len(meta) > 6 else "attachment")
+        ctype = a.get("contentType") or (meta[4] if len(meta) > 4 else "")
         lines.append("")
         lines.append(f"## Anhang: {name}")
         if ctype == "application/pdf" and a.get("file"):
